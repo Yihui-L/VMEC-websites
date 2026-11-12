@@ -1,0 +1,1067 @@
+      MODULE vmec_input
+      USE vparams, ONLY: rprec, dp, mpol1d, ntord, ndatafmax
+      USE stel_constants, ONLY: zero,twopi
+      USE vsvd0
+      IMPLICIT NONE
+!-----------------------------------------------
+!   L o c a l   V a r i a b l e s
+!   For variable descriptions, see VMEC "readin.f" routine
+!-----------------------------------------------
+      INTEGER, PARAMETER :: mpol_default = 6
+      INTEGER, PARAMETER :: ntor_default = 0
+      INTEGER, PARAMETER :: ns_default   = 31
+      INTEGER :: nfp, ncurr, nsin, niter, nstep, nvacskip, mpol, ntor,
+     1           ntheta, nzeta, mfilter_fbdy, nfilter_fbdy,
+     2           max_main_iterations, omp_num_threads, pre_niter
+      INTEGER, DIMENSION(100) :: ns_array, niter_array
+      INTEGER :: imse, isnodes, itse, ipnodes, iopt_raxis,
+     1   imatch_phiedge, nflxs
+      INTEGER, DIMENSION(nbsetsp) :: nbfld
+      INTEGER, DIMENSION(nfloops) :: indxflx
+      INTEGER, DIMENSION(nbcoilsp,nbsetsp) :: indxbfld
+      REAL(rprec), DIMENSION(-ntord:ntord,0:mpol1d) ::
+     1   rbs, zbc, rbc, zbs
+      REAL(rprec) :: time_slice, curtor, delt, ftol, tcon0,
+     1   gamma, phiedge, phidiam, sigma_current, sigma_delphid, tensi,
+     2   tensp, tensi2, fpolyi, presfac, mseangle_offset, pres_offset,
+     3   mseangle_offsetm, spres_ped, bloat, pres_scale, 
+     4   prec2d_threshold
+      REAL(rprec), DIMENSION(0:20) :: am, ai, ac
+      REAL(rprec), DIMENSION(1:20) :: aphi
+      CHARACTER(len=20) :: pcurr_type  !  len=12 -> len=20 J Hanson 2010-03-16
+      CHARACTER(len=20) :: piota_type
+      CHARACTER(len=20) :: pmass_type
+      REAL(rprec), DIMENSION(ndatafmax) :: am_aux_s, am_aux_f,                 &
+     &   ai_aux_s, ai_aux_f, ac_aux_s, ac_aux_f
+
+!     ANISOTROPIC AMPLITUDES: AH=PHOT/PTHERMAL, AT=TPERP/TPAR
+!     bcrit: hot particle energy deposition value for |B|
+      REAL(rprec), DIMENSION(0:20) :: ah, at       
+      REAL(rprec)  :: bcrit
+      CHARACTER(len=20) :: pt_type     ! SAL  For Ani/Flow
+      CHARACTER(len=20) :: ph_type     ! SAL  For Ani/Flow,
+      REAL(rprec), DIMENSION(ndatafmax) :: ah_aux_s, ah_aux_f,
+     &                                     at_aux_s, at_aux_f
+
+      REAL(rprec), DIMENSION(0:ntord) :: raxis, zaxis                !!Backwards compatibility: Obsolete
+      REAL(rprec), DIMENSION(0:ntord) :: raxis_cc, raxis_cs,
+     1                                   zaxis_cc, zaxis_cs
+      REAL(rprec), DIMENSION(100) :: ftol_array
+      REAL(rprec), DIMENSION(nigroup), TARGET :: extcur ! V3FIT needs a pointer to this.
+      REAL(rprec), DIMENSION(nmse) :: mseprof
+      REAL(rprec), DIMENSION(ntse) :: rthom, datathom, sigma_thom
+      REAL(rprec), DIMENSION(nmse) :: rstark, datastark,
+     1    sigma_stark
+      REAL(rprec), DIMENSION(nfloops) :: dsiobt, sigma_flux
+      REAL(rprec), DIMENSION(nbcoilsp,nbsetsp) :: bbc, sigma_b
+      REAL(rprec), DIMENSION(ndatafmax) :: psa, pfa, isa, ifa
+      LOGICAL :: lpofr, lmac, lfreeb, lrecon, loldout, ledge_dump,
+     1           lasym, lforbal,lrfp, lmovie,  lmove_axis,
+     2           lwouttxt, ldiagno,       ! J.Geiger: for txt- and diagno-output
+     3           lmoreiter,               ! J.Geiger: if force residuals are not fulfilled add more iterations.
+     4           lfull3d1out,             ! J.Geiger: to force full 3D1-output
+     5           l_v3fit=.false.,
+     6           lspectrum_dump, loptim           !!Obsolete
+      LOGICAL :: lgiveup                  ! inserted M.Drevlak
+      REAL(rprec) :: fgiveup              ! inserted M.Drevlak, giveup-factor for ftolv
+      LOGICAL :: lbsubs                   ! J Hanson See jxbforce coding
+      
+      CHARACTER(len=200) :: mgrid_file
+      CHARACTER(len=200) :: trip3d_file   ! SAL - TRIP3D
+      CHARACTER(len=10)  :: precon_type
+      CHARACTER(len=120) :: arg1
+      CHARACTER(len=100) :: input_extension
+
+      LOGICAL :: lvolume_rfix
+      REAL(rprec) :: tvolume
+
+      LOGICAL :: lnyquist = .TRUE.    !=false, suppress nyquist stuff; CZHU 2021.03.31
+
+      LOGICAL :: l_cpu_accel = .FALSE., l_gmres1d = .FALSE.
+      INTEGER :: cpu_threads = 0, mpi_ranks = 0
+      REAL(rprec) :: gmres1d_threshold = 0._rprec
+      NAMELIST /additional_lyh/ l_cpu_accel, cpu_threads, mpi_ranks,
+     &                          l_gmres1d, gmres1d_threshold
+
+      NAMELIST /indata/ mgrid_file, time_slice, nfp, ncurr, nsin,
+     1   niter, nstep, nvacskip, delt, ftol, gamma, am, ai, ac, aphi,
+     1   pcurr_type, pmass_type, piota_type,
+     1   am_aux_s, am_aux_f, ai_aux_s, ai_aux_f, ac_aux_s, ac_aux_f,  ! J Hanson 2010-03-16
+     1   ah, at, bcrit,                                               ! WAC (anisotropic pres)
+     1   ph_type, ah_aux_s, ah_aux_f,
+     1   pt_type, at_aux_s, at_aux_f,
+     2   rbc, zbs, rbs, zbc, spres_ped, pres_scale, raxis_cc, zaxis_cs, 
+     3   raxis_cs, zaxis_cc, mpol, ntor, ntheta, nzeta, mfilter_fbdy,
+     3   nfilter_fbdy, niter_array, pre_niter, 
+     4   ns_array, ftol_array, tcon0, precon_type, prec2d_threshold,
+     4   curtor, sigma_current, extcur, omp_num_threads,
+     5   phiedge, psa, pfa, isa, ifa, imatch_phiedge, iopt_raxis, 
+     6   tensi, tensp, mseangle_offset, mseangle_offsetm, imse, 
+     7   isnodes, rstark, datastark, sigma_stark, itse, ipnodes, 
+     8   presfac, pres_offset, rthom, datathom, sigma_thom, phidiam, 
+     9   sigma_delphid, tensi2, fpolyi, nflxs, indxflx, dsiobt, 
+     A   sigma_flux, nbfld, indxbfld, bloat, raxis, zaxis,
+     A   bbc, sigma_b, lpofr, lforbal, lfreeb, lmove_axis, lrecon, lmac, 
+     C   lmovie,                                                           ! S Lazerson 2010
+     D   lasym, ledge_dump, lspectrum_dump, loptim, lrfp,
+     E   loldout, lwouttxt, ldiagno, lfull3d1out, max_main_iterations,     ! J Geiger 2010-05-04
+     D   lgiveup,fgiveup,                                                  ! M.Drevlak 2012-05-10
+     E   lbsubs,                                                           ! 2014-01-12 See jxbforce
+     F   trip3d_file,                                                      ! SAL - TRIP3D
+     G   lnyquist,
+     H   tvolume, lvolume_rfix
+
+      NAMELIST /mseprofile/ mseprof
+
+      CONTAINS
+
+      SUBROUTINE read_indata_namelist (iunit, istat)
+      INTEGER, INTENT(IN) :: iunit
+      INTEGER, INTENT(OUT) :: istat
+      ChARACTER(len=256) :: line
+      INTEGER :: line_status
+      REAL(rprec) :: temp_volume
+
+!
+!     INITIALIZATIONS
+!
+      l_cpu_accel = .FALSE.; cpu_threads = 0; mpi_ranks = 0
+      l_gmres1d = .FALSE.; gmres1d_threshold = 0._rprec
+      istat = 0
+      omp_num_threads = 8
+      gamma = 0
+      spres_ped = 1
+      mpol = mpol_default
+      ntor = ntor_default
+      ntheta = 0;  nzeta = 0
+      ns_array = 0;  ns_array(1) = ns_default
+      niter_array = -1;
+      pre_niter = -1
+      bloat = 1
+      rbc = 0;  rbs = 0; zbs = 0; zbc = 0
+      time_slice = 0
+      nfp = 1
+      ncurr = 0
+      nsin = ns_default
+      niter = 100
+      nstep = 10
+      nvacskip = 1
+      delt = 1
+      ftol = 1.E-10_dp
+!     Zero marks an omitted schedule; readin builds it from FTOL.
+      ftol_array = 0
+      am = 0; ai = 0; ac = 0; aphi = 0; aphi(1) = 1
+      pres_scale = 1
+      raxis_cc = 0; zaxis_cs = 0; raxis_cs = 0; zaxis_cc = 0;
+      mfilter_fbdy = -1; nfilter_fbdy = -1
+      tcon0 = 1
+      precon_type = 'NONE'; prec2d_threshold = 1.E-30_dp
+      curtor = 0; 
+      extcur = 0;  phiedge = 1;
+      mgrid_file = 'NONE'
+      trip3d_file = 'NONE' ! SAL - TRIP3D
+      lfreeb = .true.
+      lmove_axis = .true.
+      lmac = .false.
+      lforbal = .false.
+      lasym = .false.
+      lrfp = .false.
+      loldout = .false.        ! J Geiger 2010-05-04 start
+      ldiagno = .false.
+      lgiveup = .false.        ! inserted M.Drevlak
+      fgiveup = 3.E+01_dp      ! inserted M.Drevlak
+      lbsubs = .false.         ! J Hanson. See jxbforce coding
+      lfull3d1out = .false.
+      lmovie = .false.         ! S Lazerson for making movie files
+      lmoreiter = .false.      ! default value if no max_main_iterations given.
+      max_main_iterations = 1  ! to keep a presumably expected standard behavior.
+#if defined(NETCDF)
+      lwouttxt = .false.       ! to keep functionality as expected with netcdf
+#else
+      lwouttxt = .true.        ! and without netcdf
+#endif
+
+      pcurr_type = 'power_series'
+      piota_type = 'power_series'
+      pmass_type = 'power_series'
+
+!     ANISTROPY PARAMETERS
+      bcrit = 1
+      at(0) = 1;  at(1:) = 0
+      ah = 0
+      ph_type = 'power_series'
+      pt_type = 'power_series'
+      ah_aux_s(:) = -1
+      at_aux_s(:) = -1
+      am_aux_s(:) = -1
+      ac_aux_s(:) = -1
+      ai_aux_s(:) = -1
+
+!     Rescaling parameters
+      tvolume = -1
+      lvolume_rfix = .false.
+      
+
+!
+!     BACKWARDS COMPATIBILITY
+!
+      raxis = 0;  zaxis = 0
+
+      IF (iunit.eq.-327) RETURN
+      
+      READ (iunit, nml=indata, iostat=istat)
+
+      IF (istat /= 0) THEN
+         BACKSPACE(iunit,IOSTAT=line_status)
+         IF (line_status.EQ.0)
+     &      READ(iunit,fmt='(A)',IOSTAT=line_status) line
+         IF (line_status.EQ.0) THEN
+            WRITE(6,'(A)') 'Invalid line in namelist: '//TRIM(line)
+         ELSE
+            WRITE(6,'(A)') 'Missing or unreadable INDATA namelist'
+         END IF
+         CALL FLUSH(6)
+         RETURN
+      END IF
+
+      CALL read_additional_lyh_namelist(iunit, istat)
+      IF (istat /= 0) RETURN
+
+      IF (ALL(niter_array == -1)) niter_array = niter
+      WHERE (raxis .ne. 0._dp) 
+         raxis_cc = raxis
+      ELSEWHERE
+         raxis_cc = raxis_cc
+      ENDWHERE
+      WHERE (zaxis .ne. 0._dp) 
+         zaxis_cs = zaxis
+      ELSEWHERE
+         zaxis_cs = zaxis_cs
+      ENDWHERE
+
+      raxis_cs(0) = 0; zaxis_cs(0) = 0
+
+      IF(max_main_iterations .gt. 1) lmoreiter=.true.  !J Geiger: if more iterations are requested.
+
+      END SUBROUTINE read_indata_namelist
+
+      SUBROUTINE validate_lyh_options(istat)
+      USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_is_finite
+      INTEGER, INTENT(OUT) :: istat
+      CHARACTER(LEN=LEN(precon_type)) :: solver
+      INTEGER :: i, ch
+
+      istat = 1
+      solver = ADJUSTL(precon_type)
+      DO i = 1, LEN_TRIM(solver)
+         ch = IACHAR(solver(i:i))
+         IF (ch.GE.IACHAR('a') .AND. ch.LE.IACHAR('z'))
+     &      solver(i:i) = ACHAR(ch-IACHAR('a')+IACHAR('A'))
+      END DO
+      IF (solver.EQ.'GMRES1D') THEN
+         WRITE(6,'(A)') 'PRECON_TYPE=GMRES1D has moved to '
+     &      // '&ADDITIONAL_LYH: set L_GMRES1D and GMRES1D_THRESHOLD.'
+         RETURN
+      END IF
+      IF (cpu_threads.LT.0 .OR. mpi_ranks.LT.0) THEN
+         WRITE(6,'(A)') 'CPU_THREADS and MPI_RANKS must be >= 0'
+         RETURN
+      END IF
+      IF (.NOT.l_cpu_accel .AND. cpu_threads.GT.1) THEN
+         WRITE(6,'(A)') 'CPU_THREADS > 1 requires L_CPU_ACCEL=T.'
+         RETURN
+      END IF
+      IF (l_gmres1d) THEN
+         IF (.NOT.ieee_is_finite(gmres1d_threshold)) THEN
+            WRITE(6,'(A)') 'GMRES1D_THRESHOLD must be finite.'
+            RETURN
+         END IF
+         IF (gmres1d_threshold.LE.zero) THEN
+            WRITE(6,'(A)') 'L_GMRES1D requires GMRES1D_THRESHOLD > 0.'
+            RETURN
+         END IF
+         IF (solver.NE.'NONE' .AND. solver.NE.'DEFAULT' .AND.
+     &       LEN_TRIM(solver).NE.0) THEN
+            WRITE(6,'(A)') 'L_GMRES1D requires PRECON_TYPE=NONE or '
+     &         // 'DEFAULT and cannot run with the 2D preconditioner.'
+            RETURN
+         END IF
+      END IF
+      istat = 0
+      END SUBROUTINE validate_lyh_options
+
+      SUBROUTINE read_additional_lyh_namelist(iunit, istat)
+      USE, INTRINSIC :: iso_fortran_env, ONLY: iostat_end,
+     &                                       iostat_eor
+      INTEGER, INTENT(IN) :: iunit
+      INTEGER, INTENT(OUT) :: istat
+      INTEGER :: j, k, code, name_len, nchars, nremaining, nrecords
+      CHARACTER(LEN=:), ALLOCATABLE :: record
+      CHARACTER(LEN=4096) :: buffer
+      CHARACTER(LEN=14) :: group_name
+      CHARACTER(LEN=*), PARAMETER :: name_chars =
+     &   'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+     &   //'0123456789_'
+      CHARACTER :: quote, ch
+      LOGICAL :: found, in_group, at_group_start
+
+!     Save the sequential record position without assuming that the
+!     caller read the first INDATA group in the file.
+      nremaining = 0
+      DO
+         READ(iunit,'(A)',IOSTAT=istat) buffer
+         IF (istat.NE.0) EXIT
+         nremaining = nremaining + 1
+      END DO
+      IF (istat.NE.iostat_end) RETURN
+
+!     Locate the optional group outside strings/comments.  An EOF from
+!     reading a present, unterminated group must remain an input error.
+!     Count every record so that the original position can be restored.
+      found = .FALSE.
+      in_group = .FALSE.
+      quote = ' '
+      nrecords = 0
+      REWIND(iunit, IOSTAT=istat)
+      IF (istat.NE.0) RETURN
+      DO
+         record = ''
+         DO
+            READ(iunit,'(A)',ADVANCE='NO',SIZE=nchars,
+     &           IOSTAT=istat) buffer
+            record = record//buffer(:nchars)
+            IF (istat.NE.0) EXIT
+         END DO
+         IF (istat.EQ.iostat_eor) istat = 0
+         IF (istat.NE.0) EXIT
+         nrecords = nrecords + 1
+         record = record//' '
+         at_group_start = .TRUE.
+         DO j = 1, LEN_TRIM(record)
+            ch = record(j:j)
+            IF (quote.NE.' ') THEN
+               IF (ch.EQ.quote) quote = ' '
+               CYCLE
+            END IF
+            IF (ch.EQ.'!') EXIT
+!           Free text outside namelists may contain unmatched quotes.
+            IF (in_group) THEN
+               IF (ch.EQ."'".OR.ch.EQ.'"') THEN
+                  quote = ch
+                  CYCLE
+               ELSE IF (ch.EQ.'/') THEN
+                  in_group = .FALSE.
+                  at_group_start = .TRUE.
+                  CYCLE
+               END IF
+            ELSE
+               IF (.NOT.at_group_start) CYCLE
+               IF (ch.EQ.' '.OR.ch.EQ.ACHAR(9)) CYCLE
+               at_group_start = .FALSE.
+            END IF
+            IF (ch.NE.'&' .AND. ch.NE.'$') CYCLE
+            DO k = j+1, LEN_TRIM(record)
+               IF (record(k:k).NE.' ' .AND.
+     &             record(k:k).NE.ACHAR(9)) EXIT
+            END DO
+            name_len = VERIFY(record(k:), name_chars) - 1
+            IF (name_len.LE.0) CYCLE
+            group_name = record(k:k+name_len-1)
+            DO code = 1, LEN_TRIM(group_name)
+               IF (group_name(code:code).GE.'A' .AND.
+     &             group_name(code:code).LE.'Z')
+     &             group_name(code:code) = ACHAR(
+     &             IACHAR(group_name(code:code))+32)
+            END DO
+            IF (group_name.EQ.'end') THEN
+               in_group = .FALSE.
+               at_group_start = .TRUE.
+               CYCLE
+            END IF
+            in_group = .TRUE.
+            IF (name_len.NE.12 .AND. name_len.NE.14) CYCLE
+            IF (group_name.EQ.'spectral_opt') THEN
+               WRITE(6,'(A)') '&SPECTRAL_OPT is no longer supported'
+               istat = 1
+               RETURN
+            END IF
+            IF (group_name.NE.'additional_lyh') CYCLE
+            IF (found) THEN
+               WRITE(6,'(A)') 'Duplicate ADDITIONAL_LYH namelist'
+               istat = 1
+               RETURN
+            END IF
+            found = .TRUE.
+         END DO
+      END DO
+      IF (istat.NE.0 .AND. istat.NE.iostat_end) RETURN
+      IF (found) THEN
+         REWIND(iunit, IOSTAT=istat)
+         IF (istat.NE.0) RETURN
+         READ(iunit,NML=additional_lyh,IOSTAT=istat)
+         IF (istat.NE.0) THEN
+            WRITE(6,'(A)')
+     &         'Invalid or incomplete ADDITIONAL_LYH namelist'
+            istat = 1
+            RETURN
+         END IF
+      END IF
+!     Restore the original post-INDATA record position without
+!     changing any of the INDATA values already read by the caller.
+      REWIND(iunit, IOSTAT=istat)
+      IF (istat.NE.0) RETURN
+      DO j = 1, nrecords - nremaining
+         READ(iunit,'(A)',IOSTAT=istat) buffer
+         IF (istat.NE.0) RETURN
+      END DO
+      CALL validate_lyh_options(istat)
+      END SUBROUTINE read_additional_lyh_namelist
+
+      SUBROUTINE read_mse_namelist (iunit, istat)
+      INTEGER :: iunit, istat
+
+      READ (iunit, nml=mseprofile, iostat=istat)
+
+      END SUBROUTINE read_mse_namelist
+
+      SUBROUTINE read_indata_namelist_byfile (filename)
+      CHARACTER(LEN=*), INTENT(in) :: filename
+      INTEGER :: iunit, istat
+      
+      iunit = 100
+      istat = 0
+      OPEN(unit=iunit, file=TRIM(filename), iostat=istat)
+      IF (istat .ne. 0) THEN
+         iunit = -327; istat = 0
+         CALL read_indata_namelist(iunit,istat)
+         RETURN
+      END IF
+      CALL read_indata_namelist(iunit,istat)
+      CLOSE(iunit)
+
+      RETURN
+      END SUBROUTINE read_indata_namelist_byfile
+
+      SUBROUTINE write_indata_namelist_byfile (filename)
+      CHARACTER(LEN=*), INTENT(in) :: filename
+      INTEGER :: iunit, istat
+      
+      iunit = 100
+      istat = 0
+      OPEN(unit=iunit, file=TRIM(filename), iostat=istat)
+      IF (istat .ne. 0) RETURN
+      CALL write_indata_namelist(iunit,istat)
+      CLOSE(iunit)
+
+      RETURN
+      END SUBROUTINE write_indata_namelist_byfile
+      
+      SUBROUTINE write_indata_namelist (iunit, istat)
+      IMPLICIT NONE
+      INTEGER, INTENT(in) :: iunit
+      INTEGER, INTENT(inout) :: istat
+      INTEGER :: iftol,i,n,m
+      INTEGER, DIMENSION(1) :: ins
+      CHARACTER(LEN=*), PARAMETER :: outboo  = "(2X,A,1X,'=',1X,L1)"
+      CHARACTER(LEN=*), PARAMETER :: outint  = "(2X,A,1X,'=',1X,I0)"
+      CHARACTER(LEN=*), PARAMETER :: outint1 = "(2X,A,1X,'=',1X,I1.1)"
+      CHARACTER(LEN=*), PARAMETER :: outint2 = "(2X,A,1X,'=',1X,I2.2)"
+      CHARACTER(LEN=*), PARAMETER :: outint3 = "(2X,A,1X,'=',1X,I3.3)"
+      CHARACTER(LEN=*), PARAMETER :: outint4 = "(2X,A,1X,'=',1X,I4.4)"
+      CHARACTER(LEN=*), PARAMETER :: outint5 = "(2X,A,1X,'=',1X,I5.5)"
+      CHARACTER(LEN=*), PARAMETER :: outint6 = "(2X,A,1X,'=',1X,I6.6)"
+      CHARACTER(LEN=*), PARAMETER :: outflt="(2X,A,1X,'=',1X,ES22.12E3)"
+      CHARACTER(LEN=*), PARAMETER :: outexp="(2X,A,1X,'=',1X,ES22.12E3)"
+      IF (istat < 0) RETURN
+      WRITE(iunit,'(A)') '!----- Runtime Parameters -----'
+      WRITE(iunit,'(A)') '&INDATA'
+      WRITE(iunit,outflt) 'DELT',delt
+      WRITE(iunit,outint) 'NITER',niter
+      WRITE(iunit,outint) 'NSTEP',nstep
+      WRITE(iunit,outflt) 'TCON0',tcon0
+      ins = MAXLOC(ns_array)
+      WRITE(iunit,'(a,(1p,4i14))')  '  NS_ARRAY =    ',
+     1     (ns_array(i), i=1,ins(1))
+      iftol = 1
+      DO WHILE(ftol_array(iftol).ne.0 .and. iftol.lt.100)
+         iftol = iftol + 1
+      END DO
+      WRITE(iunit,'(a,(1p,4e14.6))')'  FTOL_ARRAY =  ',
+     1     (ftol_array(i), i=1,iftol - 1)
+      ins = MINLOC(niter_array)
+      IF (ins(1) > 1)
+     1 WRITE(iunit,'(a,(1p,4i14))') '  NITER_ARRAY = ',
+     2      (niter_array(i), i=1,ins(1)-1)
+      WRITE (iunit,'(2x,3a)') "PRECON_TYPE = '", TRIM(precon_type),"'" 
+      WRITE (iunit,'(2x,a,1p,e14.6)') "PREC2D_THRESHOLD = ", 
+     1                                prec2d_threshold
+      WRITE(iunit,outint) 'PRE_NITER',pre_niter
+      WRITE(iunit,'(A)') '!----- Grid Parameters -----'
+      WRITE(iunit,outboo) 'LASYM',lasym
+      WRITE(iunit,outint4) 'NFP',nfp
+      WRITE(iunit,outint4) 'MPOL',mpol
+      WRITE(iunit,outint4) 'NTOR',ntor
+      WRITE(iunit,outflt) 'PHIEDGE',phiedge
+      IF (ntheta >0 ) WRITE(iunit,outint4) 'NTHETA',ntheta
+      WRITE(iunit,outint4) 'NZETA',nzeta
+      IF (lrfp) THEN
+         WRITE(iunit,'(A)') '!----- RFP Parameters -----'
+         WRITE(iunit,outboo) 'LRFP',lrfp
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  APHI = ',
+     1                                   (aphi(n), n=1,SIZE(aphi))
+      END IF
+      WRITE(iunit,'(A)') '!----- Free Boundary Parameters -----'
+      WRITE(iunit,outboo) 'LFREEB',lfreeb
+      IF (lfreeb) THEN
+         WRITE (iunit, '(2x,3a)') "MGRID_FILE = '",TRIM(mgrid_file),"'"
+         WRITE(iunit,outint4) 'NVACSKIP',nvacskip
+         IF (TRIM(trip3d_file) /= 'NONE') WRITE (iunit, '(2x,3a)') 
+     1             "TRIP3D_FILE = '",TRIM(trip3d_file),"'"  ! SAL - TRIP3D
+      END IF
+      DO n=1,SIZE(extcur)
+         IF (extcur(n) == 0) CYCLE
+         WRITE(iunit,'(2X,A,I3.3,A,ES22.12E3)')
+     1     'EXTCUR(',n,') = ',extcur(n)
+      END DO
+      WRITE(iunit,'(A)') '!----- Pressure Parameters -----'
+      WRITE(iunit,outflt) 'GAMMA',gamma
+      WRITE(iunit,outflt) 'BLOAT',bloat
+      WRITE(iunit,outflt) 'SPRES_PED',spres_ped
+      WRITE(iunit,outflt) 'PRES_SCALE',pres_scale
+      WRITE(iunit,'(2x,3a)') "PMASS_TYPE = '",TRIM(pmass_type),"'"
+      WRITE(iunit,'(a,(1p,4e22.14))')'  AM = ', (am(i-1), i=1,SIZE(am))
+      i = minloc(am_aux_s(2:),DIM=1)
+      IF (i > 4) THEN
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AM_AUX_S = ',
+     1         (am_aux_s(n), n=1,i)
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AM_AUX_F = ', 
+     1         (am_aux_f(n), n=1,i)
+      END IF
+      WRITE(iunit,'(A)') '!----- ANI/FLOW Parameters -----'
+      WRITE(iunit,outflt) 'BCRIT',SQRT(bcrit)
+      WRITE(iunit,'(2x,3a)') "PT_TYPE = '",TRIM(pt_type),"'"
+      WRITE(iunit,'(a,(1p,4e22.14))')'  AT = ', (at(i-1), i=1,SIZE(at))
+      i = minloc(at_aux_s(2:),DIM=1)
+      IF (i > 4) THEN
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AT_AUX_S = ',
+     1         (at_aux_s(n), n=1,i)
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AT_AUX_F = ', 
+     1         (at_aux_f(n), n=1,i)
+      END IF
+      WRITE(iunit,'(2x,3a)') "PH_TYPE = '",TRIM(ph_type),"'"
+      WRITE(iunit,'(a,(1p,4e22.14))')'  AH = ', (ah(i-1), i=1,SIZE(ah))
+      i = minloc(ah_aux_s(2:),DIM=1)
+      IF (i > 4) THEN
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AH_AUX_S = ',
+     1         (ah_aux_s(n), n=1,i)
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AH_AUX_F = ', 
+     1         (ah_aux_f(n), n=1,i)
+      END IF
+      WRITE(iunit,'(A)') '!----- Current/Iota Parameters -----'
+      WRITE(iunit,outexp) 'CURTOR',curtor
+      WRITE(iunit,outint) 'NCURR',ncurr
+      WRITE (iunit, '(2x,3a)') "PIOTA_TYPE = '",TRIM(piota_type),"'"
+      WRITE (iunit,'(a,(1p,4e22.14))') '  AI = ',(ai(n-1), n=1,SIZE(ai))
+      i = minloc(ai_aux_s(2:),DIM=1)
+      IF (i > 4) THEN
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AI_AUX_S = ', 
+     1         (ai_aux_s(n), n=1,i)
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AI_AUX_F = ', 
+     1         (ai_aux_f(n), n=1,i)
+      END IF
+      WRITE (iunit, '(2x,3a)') "PCURR_TYPE = '",TRIM(pcurr_type),"'"
+      WRITE (iunit,'(a,(1p,4ES22.12E3))')
+     1 '  AC = ',(ac(n-1), n=1,SIZE(ac))
+      i = minloc(ac_aux_s(2:),DIM=1)
+      IF (i > 4) THEN
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AC_AUX_S = ', 
+     1         (ac_aux_s(n), n=1,i)
+         WRITE (iunit,'(a,(1p,4ES22.12E3))') '  AC_AUX_F = ',
+     1         (ac_aux_f(n), n=1,i)
+      END IF
+      WRITE(iunit,'(A)') '!----- Axis Parameters ----- '
+      WRITE (iunit,'(a,(1p,4e22.14))') 
+     1     '  RAXIS_CC = ',(raxis_cc(n), n=0,ntor)
+      IF (lasym)
+     1      WRITE (iunit,'(a,(1p,4ES22.12E3))') 
+     2     '  RAXIS_CS = ',(raxis_cs(n), n=0,ntor)
+      IF (lasym)
+     1      WRITE (iunit,'(a,(1p,4ES22.12E3))') 
+     2     '  ZAXIS_CC = ',(zaxis_cc(n), n=0,ntor)
+      WRITE (iunit,'(a,(1p,4ES22.12E3))') 
+     1     '  ZAXIS_CS = ',(zaxis_cs(n), n=0,ntor)
+      WRITE(iunit,'(A)') '!----- Boundary Parameters -----'
+      IF (tvolume > 0) THEN
+         WRITE(iunit,outexp) 'TVOLUME',tvolume
+         WRITE(iunit,outboo) 'LVOLUME_RFIX',lvolume_rfix
+      END IF
+      DO m = 0, mpol - 1
+         DO n = -ntor, ntor
+            IF ((rbc(n,m).ne.0) .or. (zbs(n,m).ne.0)) THEN
+               WRITE(iunit,'(2(A,I4.3,A,I3.3,A,ES22.12E3))') 
+     1         '  RBC(',n,',',m,') = ',rbc(n,m),
+     2         '    ZBS(',n,',',m,') = ',zbs(n,m)
+            END IF
+            IF (.not. lasym) CYCLE
+            IF ((rbs(n,m).ne.0) .or. (zbc(n,m).ne.0)) THEN
+               WRITE(iunit,'(2(A,I4.3,A,I3.3,A,ES22.12E3))') 
+     1         '  RBS(',n,',',m,') = ',rbs(n,m),
+     2         '    ZBC(',n,',',m,') = ',zbc(n,m)
+            END IF
+         END DO
+      END DO
+      WRITE(iunit,'(A)') '/'
+      WRITE(iunit,NML=additional_lyh,IOSTAT=istat)
+      RETURN
+      END SUBROUTINE write_indata_namelist
+
+      SUBROUTINE bcast_indata_namelist(local_master,local_comm,iflag)
+      USE mpi_params
+      USE mpi_inc
+      IMPLICIT NONE
+      INTEGER,INTENT(IN) :: local_master
+      INTEGER,INTENT(INOUT) :: local_comm
+      INTEGER,INTENT(INOUT) :: iflag
+!DEC$ IF DEFINED (MPI_OPT)
+      iflag = 0
+      CALL MPI_BCAST(l_cpu_accel,1,MPI_LOGICAL,local_master,
+     &               local_comm,iflag)
+      CALL MPI_BCAST(cpu_threads,1,MPI_INTEGER,local_master,
+     &               local_comm,iflag)
+      CALL MPI_BCAST(mpi_ranks,1,MPI_INTEGER,local_master,
+     &               local_comm,iflag)
+      CALL MPI_BCAST(l_gmres1d,1,MPI_LOGICAL,local_master,
+     &               local_comm,iflag)
+      CALL MPI_BCAST(gmres1d_threshold,1,MPI_DOUBLE_PRECISION,
+     &               local_master,local_comm,iflag)
+      ! Logicals
+      CALL MPI_BCAST(lpofr,          1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lmac,           1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lfreeb,         1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lrecon,         1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(loldout,        1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(ledge_dump,     1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lasym,          1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lforbal,        1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lrfp,           1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lmovie,         1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lmove_axis,     1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lwouttxt,       1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(ldiagno,        1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lmoreiter,      1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lfull3d1out,    1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(l_v3fit,        1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lspectrum_dump, 1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(loptim,         1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lgiveup,        1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lbsubs,         1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(lvolume_rfix,   1, MPI_LOGICAL, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BARRIER(local_comm,iflag)
+      ! Integers
+      CALL MPI_BCAST(nfp,                 1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(ncurr,               1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(nsin,                1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(niter,               1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(nstep,               1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(nvacskip,            1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(mpol,                1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(ntor,                1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(ntheta,              1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(nzeta,               1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(mfilter_fbdy,        1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(nfilter_fbdy,        1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(max_main_iterations, 1, MPI_INTEGER, local_master,
+     1               local_comm, iflag)
+      CALL MPI_BCAST(imse,                1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(isnodes,             1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(itse,                1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(ipnodes,             1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(iopt_raxis,          1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(imatch_phiedge,      1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BCAST(nflxs,               1, MPI_INTEGER, local_master, 
+     1               local_comm, iflag)
+      CALL MPI_BARRIER(local_comm,iflag)
+      ! Integer Arrays
+      CALL MPI_BCAST(ns_array,    100,              MPI_INTEGER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(niter_array, 100,              MPI_INTEGER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(nbfld,       nbsetsp,          MPI_INTEGER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(indxflx,     nfloops,          MPI_INTEGER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(indxbfld,    nbcoilsp*nbsetsp, MPI_INTEGER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BARRIER(local_comm,iflag)
+      ! Reals
+      CALL MPI_BCAST(time_slice,       1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(curtor,           1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(delt,             1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(ftol,             1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(tcon0,            1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(gamma,            1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(phiedge,          1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(phidiam,          1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(sigma_current,    1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(sigma_delphid,    1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(tensi,            1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(tensp,            1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(tensi2,           1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(fpolyi,           1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(presfac,          1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(mseangle_offset,  1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(pres_offset,      1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(mseangle_offsetm, 1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(spres_ped,        1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(bloat,            1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(pres_scale,       1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(prec2d_threshold, 1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(bcrit,            1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(fgiveup,          1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(tvolume,          1, MPI_DOUBLE_PRECISION, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BARRIER(local_comm,iflag)
+      ! Real Arrays
+      CALL MPI_BCAST(rbc,         (2*ntord+1)*(mpol1d+1),
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(zbs,         (2*ntord+1)*(mpol1d+1),
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(rbs,         (2*ntord+1)*(mpol1d+1),
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(zbc,         (2*ntord+1)*(mpol1d+1),
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(am,          21, 
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ai,          21, 
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ac,          21,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(aphi,        20,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ah,          21,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(at,          21,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(am_aux_s,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(am_aux_f,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ac_aux_s,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ac_aux_f,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ai_aux_s,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ai_aux_f,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ah_aux_s,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ah_aux_f,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(at_aux_s,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(at_aux_f,    ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(raxis,       ntord+1,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(zaxis,       ntord+1,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(raxis_cc,    ntord+1,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(raxis_cs,    ntord+1,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(zaxis_cc,    ntord+1,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(zaxis_cs,    ntord+1,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ftol_array,  100,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(extcur,      nigroup,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(mseprof,     nmse,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(rthom,       ntse,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(datathom,    ntse,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(sigma_thom,  ntse,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(rstark,      nmse,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(datastark,   nmse,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(sigma_stark, nmse,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(dsiobt,      nfloops,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(sigma_flux,  nfloops,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(bbc,         nbcoilsp*nbsetsp,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(sigma_b,     nbcoilsp*nbsetsp,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(psa,         ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(pfa,         ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(isa,         ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BCAST(ifa,         ndatafmax,
+     1           MPI_DOUBLE_PRECISION, local_master, local_comm, iflag)
+      CALL MPI_BARRIER(local_comm,iflag)
+      ! Strings
+      CALL MPI_BCAST(pcurr_type,      20,  MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(piota_type,      20,  MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(pmass_type,      20,  MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(pt_type,         20,  MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(ph_type,         20,  MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(mgrid_file,      200, MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(trip3d_file,     200, MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(precon_type,     10,  MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(arg1,            120, MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BCAST(input_extension, 100, MPI_CHARACTER, 
+     1               local_master, local_comm, iflag)
+      CALL MPI_BARRIER(local_comm,iflag)
+      IF (iflag /= 0) RETURN
+!DEC$ ENDIF
+      iflag = 0
+      RETURN
+      END SUBROUTINE bcast_indata_namelist
+
+      SUBROUTINE INDATA_VOLUME(volume)
+      IMPLICIT NONE
+      DOUBLE PRECISION,INTENT(INOUT) :: volume
+      INTEGER :: m, n, u, v
+      INTEGER, PARAMETER :: nu = 256
+      INTEGER, PARAMETER :: nv = 256
+      REAL(rprec) :: tcos, tsin, arg1
+      REAL(rprec), DIMENSION(nu,nv) :: rreal, zreal, rureal
+      volume = zero; rreal = zero; zreal = zero; rureal = zero
+      DO n = -ntord,ntord
+         DO m = 0,mpol1d
+            IF (rbc(n,m) == zero .and. zbs(n,m) == zero) CYCLE
+            DO u = 1, nu
+               DO v = 1, nv
+                  arg1 = (m*DBLE(u-1)/nu-n*DBLE(v-1)/nv)*twopi
+                  tcos = COS(arg1)
+                  tsin = SIN(arg1)
+                  rreal(u,v)  = rreal(u,v) + rbc(n,m) * tcos
+                  zreal(u,v)  = zreal(u,v) + zbs(n,m) * tsin
+                  rureal(u,v) = rureal(u,v) 
+     1                          - m * rbc(n,m) * tsin * twopi
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (lasym) THEN
+         DO n = -ntord,ntord
+            DO m = 0,mpol1d
+               IF (rbs(n,m) == zero .and. zbc(n,m) == zero) CYCLE
+               DO u = 1, nu
+                  DO v = 1, nv
+                     arg1 = (m*DBLE(u-1)/nu-n*DBLE(v-1)/nv)*twopi
+                     tcos = COS(arg1)
+                     tsin = SIN(arg1)
+                     rreal(u,v)  = rreal(u,v) + rbs(n,m) * tsin
+                     zreal(u,v)  = zreal(u,v) + zbc(n,m) * tcos
+                     rureal(u,v) = rureal(u,v) 
+     1                             + m * rbs(n,m) * tcos * twopi
+                  END DO
+               END DO
+            END DO
+         END DO
+      END IF
+      volume = ABS(twopi*SUM(rreal*zreal*rureal)/DBLE(nu*nv))
+      RETURN
+      END SUBROUTINE INDATA_VOLUME
+
+      SUBROUTINE INDATA_AREA(area)
+      IMPLICIT NONE
+      DOUBLE PRECISION,INTENT(INOUT) :: area
+      INTEGER :: m, n, u, v
+      INTEGER, PARAMETER :: nu = 256
+      INTEGER, PARAMETER :: nv = 256
+      REAL(rprec) :: tcos, tsin, arg1
+      REAL(rprec), DIMENSION(nu,nv) :: zreal, rureal
+      area = zero; zreal = zero; rureal = zero
+      DO n = -ntord,ntord
+         DO m = 0,mpol1d
+            IF (rbc(n,m) == zero .and. zbs(n,m) == zero) CYCLE
+            DO u = 1, nu
+               DO v = 1, nv
+                  arg1 = (m*DBLE(u-1)/nu-n*DBLE(v-1)/nv)*twopi
+                  tcos = COS(arg1)
+                  tsin = SIN(arg1)
+                  zreal(u,v)  = zreal(u,v) + zbs(n,m) * tsin
+                  rureal(u,v) = rureal(u,v) 
+     1                          - m * rbc(n,m) * tsin * twopi
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (lasym) THEN
+         DO n = -ntord,ntord
+            DO m = 0,mpol1d
+               IF (rbs(n,m) == zero .and. zbc(n,m) == zero) CYCLE
+               DO u = 1, nu
+                  DO v = 1, nv
+                     arg1 = (m*DBLE(u-1)/nu-n*DBLE(v-1)/nv)*twopi
+                     tcos = COS(arg1)
+                     tsin = SIN(arg1)
+                     zreal(u,v)  = zreal(u,v) + zbc(n,m) * tcos
+                     rureal(u,v) = rureal(u,v) 
+     1                             + m * rbs(n,m) * tcos * twopi
+                  END DO
+               END DO
+            END DO
+         END DO
+      END IF
+      area = ABS(SUM(zreal*rureal)/DBLE(nu*nv))
+      RETURN
+      END SUBROUTINE INDATA_AREA
+
+      SUBROUTINE RESCALE_BOUNDARY
+      IMPLICIT NONE
+      REAL(rprec) :: AVolume, AArea, AR00, TArea
+      IF (tvolume .gt. 0.0) THEN
+         CALL INDATA_VOLUME(AVolume)
+         IF (lvolume_rfix) THEN
+            CALL INDATA_AREA(AArea)
+            AR00 = AVolume/(twopi * AArea)
+            TArea = TVolume/(twopi * AR00)
+            raxis_cc = rbc(0:ntord,0)
+            zaxis_cs = zbs(0:ntord,0)
+            rbc = rbc * (Tarea / Aarea) ** (1.0/2.0)
+            zbs = zbs * (Tarea / Aarea) ** (1.0/2.0)
+            rbc(0:ntord,0) = raxis_cc(0:ntord)
+            zbs(0:ntord,0) = zaxis_cs(0:ntord)
+            IF (lasym) THEN
+               raxis_cs = rbs(0:ntord,0)
+               zaxis_cc = zbc(0:ntord,0)
+               rbs = rbs * (Tarea / Aarea) ** (1.0/2.0)
+               zbc = zbc * (Tarea / Aarea) ** (1.0/2.0)
+               rbs(0:ntord,0) = raxis_cs(0:ntord)
+               zbc(0:ntord,0) = zaxis_cc(0:ntord)
+            END IF
+         ELSE
+            rbc = rbc * (tvolume / AVolume) ** (1.0/3.0)
+            zbs = zbs * (tvolume / AVolume) ** (1.0/3.0)
+            IF (lasym) THEN
+               rbs = rbs * (tvolume / AVolume) ** (1.0/3.0)
+               zbc = zbc * (tvolume / AVolume) ** (1.0/3.0)
+            END IF
+         ENDIF
+         CALL INIT_AXIS_MIDPOINT
+      END IF
+      RETURN
+      END SUBROUTINE RESCALE_BOUNDARY
+
+
+      SUBROUTINE INIT_AXIS_MEAN
+      IMPLICIT NONE
+      INTEGER :: n
+      raxis = zero; zaxis = zero
+      DO n = 0, ntord
+            raxis_cc(n) = rbc(n, 0)
+            zaxis_cc(n) = zbc(n, 0)
+            raxis_cs(n) = rbs(n, 0)
+            zaxis_cs(n) = zbs(n, 0)
+      END DO
+      RETURN
+      END SUBROUTINE INIT_AXIS_MEAN
+
+      SUBROUTINE INIT_AXIS_MIDPOINT
+      IMPLICIT NONE
+      INTEGER :: n, m
+      CALL INIT_AXIS_MEAN
+      DO m = 2, mpol1d, 2 ! Add even-m modes for m>0
+         ! Handle the n=0 modes:
+         raxis_cc(0) = raxis_cc(0) + rbc(0, m)
+         zaxis_cc(0) = zaxis_cc(0) + zbc(0, m)
+         ! No need to include the sin(n*phi) modes for n=0 here.
+         ! Handle the n.ne.0 modes:
+         DO n = 1, ntord
+            raxis_cc(n) = raxis_cc(n) + rbc(n, m) + rbc(-n, m)
+            zaxis_cc(n) = zaxis_cc(n) + zbc(n, m) + zbc(-n, m)
+            raxis_cs(n) = raxis_cs(n) + rbs(n, m) - rbs(-n, m)
+            zaxis_cs(n) = zaxis_cs(n) + zbs(n, m) - zbs(-n, m)
+         END DO
+      END DO
+      RETURN
+      END SUBROUTINE INIT_AXIS_MIDPOINT
+
+      END MODULE vmec_input
+
+
