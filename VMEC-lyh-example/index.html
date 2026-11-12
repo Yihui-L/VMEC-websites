@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="NCSX c09r00 自由边界平衡：原版 VMEC 与 VMEC-lyh 的收敛残差、物理量、谱和边界诊断比较，以及输入和结果文件。">
+<meta name="theme-color" content="#f5f7f6">
+<title>NCSX 自由边界算例 | VMEC-lyh</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body id="top">
+<a class="skip" href="#overview">跳转到算例正文</a>
+<header class="site-header"><div class="inner header-inner">
+<a class="wordmark" href="../Source-Code/">VMEC-lyh</a>
+<nav aria-label="页面导航"><a href="#scalars">数据对比</a><a href="#boundary">边界复核</a><a href="#files">输入与结果</a><a href="../Source-Code/">程序手册</a></nav>
+</div></header>
+<main id="overview">
+<section class="overview"><div class="inner">
+<p class="eyebrow">NCSX · C09R00 · FREE BOUNDARY</p>
+<h1>NCSX 自由边界平衡算例</h1>
+<p class="lead">使用同一输入物理参数和线圈背景场，比较原版 VMEC 与 VMEC-lyh 的收敛结果。两份 WOUT 均满足原定 <code>FTOL = 1e-12</code>；新版采用默认求解路径。</p>
+<div class="run-status" aria-label="收敛状态"><span>原版 VMEC：满足 FTOL</span><span>VMEC-lyh：满足 FTOL</span></div>
+<dl class="settings">
+<div><dt>平衡配置</dt><dd>自由边界 · 仿星器对称</dd></div>
+<div><dt>最终径向网格</dt><dd><code>NS = 99</code></dd></div>
+<div><dt>Fourier / 场周期</dt><dd><code>MPOL = 11</code> · <code>NTOR = 6</code> · <code>NFP = 3</code></dd></div>
+<div><dt>两次运行资源</dt><dd>4 个 MPI 秩 · 每秩 1 线程</dd></div>
+</dl>
+<p class="small">原版与新版的 <code>&amp;INDATA</code> 内容相同；新版运行输入额外显式列出 <code>&amp;ADDITIONAL_LYH</code> 的默认值。两次运行使用同一 <code>mgrid_c09r00.nc</code>。</p>
+</div></section>
+<section id="scalars"><div class="inner">
+<div class="section-heading"><span class="section-number">01</span><h2>收敛与 WOUT 标量</h2></div>
+<p class="lead">R、Z 和 λ 的原生归一化残差均低于 <code>1e-12</code>。下表同时列出磁场、体积、β、电流、旋转变换与边界磁通。</p>
+<div class="table-wrap" role="region" tabindex="0" aria-label="同一 NCSX 算例的 WOUT 标量比较"><table><caption>同一 NCSX 算例的 WOUT 标量比较</caption><thead><tr><th scope="col">物理量</th><th scope="col">原版 VMEC</th><th scope="col">VMEC-lyh</th><th scope="col">绝对差</th></tr></thead><tbody><tr><th scope="row">R 力残差 fsqr</th><td>9.93930334014e-13</td><td>9.93649100771e-13</td><td>2.812e-16</td></tr><tr><th scope="row">Z 力残差 fsqz</th><td>2.26195711937e-13</td><td>2.25929803273e-13</td><td>2.659e-16</td></tr><tr><th scope="row">λ 残差 fsql</th><td>1.625531101e-13</td><td>1.62453168955e-13</td><td>9.994e-17</td></tr><tr><th scope="row">磁轴磁场 b0（T）</th><td>1.43915839699</td><td>1.43915839488</td><td>2.115e-09</td></tr><tr><th scope="row">体平均磁场 volavgB（T）</th><td>1.57401788222</td><td>1.57401788152</td><td>7.014e-10</td></tr><tr><th scope="row">等离子体体积（m³）</th><td>2.96229371913</td><td>2.96229372159</td><td>2.458e-09</td></tr><tr><th scope="row">总 β（无量纲）</th><td>0.0408609074805</td><td>0.040860907511</td><td>3.051e-11</td></tr><tr><th scope="row">总环向电流（A）</th><td>-178653.181069</td><td>-178653.181069</td><td>8.440e-10</td></tr><tr><th scope="row">磁轴 iotaf</th><td>0.346458368735</td><td>0.346458331909</td><td>3.683e-08</td></tr><tr><th scope="row">LCFS iotaf</th><td>0.653948058157</td><td>0.653948052298</td><td>5.859e-09</td></tr><tr><th scope="row">LCFS 环向磁通 phi（Wb）</th><td>0.497070205837</td><td>0.497070205837</td><td>0.000e+00</td></tr></tbody></table></div>
+<p class="table-note">力残差、β 与旋转变换为无量纲量。绝对差采用原始比较记录，不由本页显示数字重新相减。</p>
+</div></section>
+<section id="spectra"><div class="inner">
+<div class="section-heading"><span class="section-number">02</span><h2>几何、径向剖面与 Fourier 谱</h2></div>
+<p class="lead">剖面与谱按 WOUT 的原生径向网格和谱索引逐元素比较。几何在一个场周期的相同角度上重建：LCFS 使用 192 个极向点 × 128 个环向点，磁轴使用相同的 128 个环向点。</p>
+<div class="table-wrap" role="region" tabindex="0" aria-label="几何、剖面和谱系数差异"><table><caption>几何、剖面和谱系数差异</caption><thead><tr><th scope="col">物理量</th><th scope="col">最大绝对差</th><th scope="col">RMS 差</th></tr></thead><tbody><tr><th scope="row">LCFS 位置（m）</th><td>1.046e-07</td><td>4.458e-08</td></tr><tr><th scope="row">磁轴位置（m）</th><td>2.374e-09</td><td>2.182e-09</td></tr><tr><th scope="row">旋转变换全网格 iotaf</th><td>3.683e-08</td><td>1.516e-08</td></tr><tr><th scope="row">压强全网格 presf（Pa）</th><td>0.000e+00</td><td>0.000e+00</td></tr><tr><th scope="row">压强半网格 pres（Pa）</th><td>0.000e+00</td><td>0.000e+00</td></tr><tr><th scope="row">半网格环向电流剖面（A）</th><td>2.008e-09</td><td>6.271e-10</td></tr><tr><th scope="row">径向力平衡指标 equif</th><td>2.648e-06</td><td>3.384e-07</td></tr><tr><th scope="row">rmnc（m）</th><td>3.029e-08</td><td>2.322e-09</td></tr><tr><th scope="row">zmns（m）</th><td>4.381e-08</td><td>3.010e-09</td></tr><tr><th scope="row">lmns（rad）</th><td>2.374e-07</td><td>1.674e-08</td></tr><tr><th scope="row">磁场强度谱 bmnc（T）</th><td>4.246e-08</td><td>1.629e-09</td></tr></tbody></table></div>
+<p class="table-note">RMS 为所列点或元素差值的均方根。LCFS 位置差反映上述共同角度采样下的差值；<code>equif</code> 是独立的径向力平衡指标，其差值不等于 <code>fsqr</code> 或 <code>fsqz</code>。</p>
+</div></section>
+<section id="boundary"><div class="inner">
+<div class="section-heading"><span class="section-number">03</span><h2>自由边界一致性复核</h2></div>
+<p class="lead">固定各自 WOUT 重构的谱状态，完整刷新 NESTOR。内部 R、Z 残差按原版常规口径计算；LCFS 离散力残差 <code>FEDGE</code>、总压跳跃与重构法向场 <code>Bn</code> 分别统计。</p>
+<div class="table-wrap" role="region" tabindex="0" aria-label="刷新真空场后的残差与 LCFS 边界诊断"><table><caption>刷新真空场后的残差与 LCFS 边界诊断</caption><thead><tr><th scope="col">诊断量</th><th scope="col">原版 VMEC</th><th scope="col">VMEC-lyh</th><th scope="col">绝对差</th></tr></thead><tbody><tr><th scope="row">刷新后的 R 力残差</th><td>9.93858452584e-13</td><td>9.93649029453e-13</td><td>2.094e-16</td></tr><tr><th scope="row">刷新后的 Z 力残差</th><td>2.26176840499e-13</td><td>2.25929811775e-13</td><td>2.470e-16</td></tr><tr><th scope="row">刷新后的 λ 残差</th><td>1.6255310956e-13</td><td>1.62453168867e-13</td><td>9.994e-17</td></tr><tr><th scope="row">FEDGE</th><td>4.29373554042e-11</td><td>4.29191365582e-11</td><td>1.822e-14</td></tr><tr><th scope="row">总压跳跃 RMS（Pa）</th><td>3985.29395192</td><td>3985.29719472</td><td>3.243e-03</td></tr><tr><th scope="row">总压跳跃绝对值采样峰值（Pa）</th><td>20126.5394926</td><td>20126.5872617</td><td>4.777e-02</td></tr><tr><th scope="row">重构边界 Bn RMS（mT）</th><td>3.81019547316</td><td>3.81019712748</td><td>1.654e-06</td></tr><tr><th scope="row">重构边界 Bn 绝对值采样峰值（mT）</th><td>17.7656309947</td><td>17.7656425151</td><td>1.152e-05</td></tr></tbody></table></div>
+<div class="method-note">
+<h3>诊断口径与结果边界</h3>
+<ul>
+<li><strong>总压跳跃：</strong>RMS 使用原生真空角网格的表面积权重；峰值是所列离散网格上的采样峰值。</li>
+<li><strong>法向场 Bn：</strong>将线圈场与虚拟套管重构的等离子体场相加，再投影至 LCFS 外法向。两份解使用相同的矢势积分方法。</li>
+<li><strong>积分与采样：</strong>每场周期的积分源网格为 84 × 108，诊断采样网格为 28 × 36。</li>
+<li><strong>比较范围：</strong>这些数据检验两版在相同离散口径下的一致性。<code>FEDGE</code>、总压跳跃和 <code>Bn</code> 与原生 <code>FTOL</code> 属于不同指标；本页未给出它们的独立验收阈值，也未进行网格收敛性外推。</li>
+</ul>
+</div>
+</div></section>
+<section id="checks"><div class="inner">
+<div class="section-heading"><span class="section-number">04</span><h2>本例核对结果</h2></div>
+<ul class="check-list">
+<li><strong>收敛判据。</strong>两版均满足原定 <code>FTOL = 1e-12</code>，刷新真空场后的三个残差也保持在该容差内。</li>
+<li><strong>默认输入等价。</strong>VMEC-lyh 显式填写附加组默认值与省略附加组的复算，WOUT 数值字段逐元素一致。</li>
+<li><strong>结果差异。</strong>LCFS 最大位置差为 <code>1.046e-07 m</code>，全网格 <code>iotaf</code> 最大差为 <code>3.683e-08</code>；压强剖面的全网格与半网格比较差均为零。</li>
+<li><strong>适用范围。</strong>本页报告这一 NCSX 自由边界算例的数据比较与一致性检查，不将其等同于其他平衡配置或其他数值分辨率的验证。</li>
+</ul>
+</div></section>
+<section id="files"><div class="inner">
+<div class="section-heading"><span class="section-number">05</span><h2>输入、结果与校验</h2></div>
+<p class="lead">以下链接指向本示例目录中的原始文件。两个 NetCDF WOUT 均为已收敛结果，可与输入和比较记录一并保存。</p>
+<ul class="file-list"><li><a href="NCSX/input.ncsx_c09r00_free">原版 VMEC 输入</a><span>INDATA · 自由边界</span><code>input.ncsx_c09r00_free</code></li><li><a href="NCSX/input.ncsx_c09r00_free_additional_lyh">VMEC-lyh 实际运行输入</a><span>相同 INDATA · 显式附加组默认值</span><code>input.ncsx_c09r00_free_additional_lyh</code></li><li><a href="NCSX/wout_ncsx_c09r00_free.nc">原版 VMEC 结果</a><span>NetCDF · 收敛 WOUT</span><code>wout_ncsx_c09r00_free.nc</code></li><li><a href="NCSX/wout_ncsx_c09r00_free_additional_lyh.nc">VMEC-lyh 结果</a><span>NetCDF · 收敛 WOUT</span><code>wout_ncsx_c09r00_free_additional_lyh.nc</code></li><li><a href="NCSX/coils.c09r00">NCSX c09r00 线圈</a><span>原始线圈文件</span><code>coils.c09r00</code></li><li><a href="NCSX/input_xgrid.dat">MAKEGRID 输入</a><span>原始外场网格输入</span><code>input_xgrid.dat</code></li><li><a href="NCSX/wout_comparison.md">数据比较原始记录</a><span>Markdown · 数据口径及文件校验</span><code>wout_comparison.md</code></li></ul>
+<p class="dependency"><strong>外场文件：</strong>运行还需 <code>mgrid_c09r00.nc</code>。它未随当前示例目录分发，本页不提供该文件的下载链接；两次计算使用的 MGRID 校验值列在下方。</p>
+<details class="provenance"><summary>SHA-256 校验与计算来源</summary>
+<dl class="hashes"><div><dt>原版 WOUT</dt><dd><code>e51252afc6906590199900c233ff09b70678d64d01c9575de14bb205bfe17d7a</code></dd></div><div><dt>VMEC-lyh WOUT</dt><dd><code>75f5c5615af5b54581bd82d32dae3dcea061a5ce9eba00c095ea49248021e8ee</code></dd></div><div><dt>原版输入</dt><dd><code>8d69f557a4e9b10aa989486fd1a521d2f2035f2d8b9d3dc3ad726c205352a342</code></dd></div><div><dt>新版输入</dt><dd><code>f853a8f58a206d1b24d82e491fe26f8dd9ecb3543d3b1680793afd4e5a0adddb</code></dd></div><div><dt>同一 MGRID</dt><dd><code>745eb2c7bd40ad187095ef60833521d4acec2b125ad556628e66efb023a5c98f</code></dd></div></dl>
+<p class="small">上述校验值来自 <a href="NCSX/wout_comparison.md">原始比较记录</a>。页面制作时已重新核对本目录中的两份输入和两份 WOUT；MGRID 的值保留为运行来源记录。</p>
+<p class="small">VMEC-lyh 计算版本：<code>a435182006ef765e677c67a84f989198dcb51111</code>。本页数据文件来源：VMEC-docs <code>83b0d34</code>。</p>
+</details>
+</div></section>
+</main>
+<footer><div class="inner footer-inner"><span>VMEC-lyh · NCSX c09r00 算例</span><div><a href="../Source-Code/">程序手册</a><a href="https://github.com/Yihui-L/VMEC-websites">GitHub 网站仓库</a><a href="#top">返回顶部</a></div></div></footer>
+</body>
+</html>

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="VMEC-lyh 平衡求解器的改动说明、运行参数与回归验证">
+<title>VMEC-lyh 改动说明</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body id="top">
+<a class="skip" href="#content">跳到正文</a>
+<header class="topbar"><div class="bar-inner">
+<a class="brand" href="#top"><svg class="brand-mark" viewBox="0 0 36 36" fill="none" stroke="currentColor" aria-hidden="true"><ellipse cx="18" cy="18" rx="15" ry="10" transform="rotate(-28 18 18)" stroke-width="2"/><ellipse cx="18" cy="18" rx="9.5" ry="6" transform="rotate(-28 18 18)" stroke-width="2"/></svg>VMEC-lyh 文档</a>
+<a class="bar-link" href="https://github.com/Yihui-L/VMEC-websites/tree/main/Source-Code">GitHub 文档目录 ↗</a>
+</div></header>
+<div class="shell">
+<aside class="sidebar"><nav aria-labelledby="nav-heading"><h2 id="nav-heading" class="nav-title">章节目录</h2><ol class="toc">
+<li><a href="#mgrid"><b>01</b><span>MGRID 缓存与 MPI 读入</span></a></li>
+<li><a href="#vacuum-update"><b>02</b><span>自由边界真空场更新间隔</span></a></li>
+<li><a href="#convergence"><b>03</b><span>FTOL 与平衡输出</span></a></li>
+<li><a href="#flux-endpoints"><b>04</b><span>磁通和旋转变换的径向端点</span></a></li>
+<li><a href="#current-spectrum"><b>05</b><span>currvmns 径向差分索引</span></a></li>
+<li><a href="#input"><b>06</b><span>ADDITIONAL_LYH 参数参考</span></a></li>
+<li><a href="#fourier-openmp"><b>07</b><span>Fourier 变换的 OpenMP 并行</span></a></li>
+<li><a href="#nestor"><b>08</b><span>NESTOR 真空积分与线性求解</span></a></li>
+<li><a href="#mpi-reduction"><b>09</b><span>MPI 标量归约</span></a></li>
+<li><a href="#cpu-launch"><b>10</b><span>CPU 资源分配与启动</span></a></li>
+<li><a href="#timing"><b>11</b><span>运行计时</span></a></li>
+<li><a href="#solver-options"><b>12</b><span>可选 GMRES 求解路径</span></a></li>
+<li><a href="#wout-restart"><b>13</b><span>WOUT 种子重启</span></a></li>
+</ol></nav></aside>
+<main id="content">
+<header class="hero">
+<svg class="contours" viewBox="0 0 320 260" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><g transform="rotate(-28 185 130)"><ellipse cx="185" cy="130" rx="124" ry="82"/><ellipse cx="185" cy="130" rx="108" ry="71"/><ellipse cx="185" cy="130" rx="92" ry="60"/><ellipse cx="185" cy="130" rx="76" ry="49"/><ellipse cx="185" cy="130" rx="60" ry="38"/><ellipse cx="185" cy="130" rx="44" ry="27"/></g></svg>
+<div class="hero-body"><p class="eyebrow">VMEC2000 · 三维磁流体平衡</p><h1>VMEC-lyh 改动说明</h1>
+<p>原版 VMEC2000 对应 STELLOPT 提交 <code>780f5db</code>。本仓库的 <code>Source-Code/VMEC-lyh/</code> 保存维护版源码。本页按功能列出当前 VMEC-lyh 相对原版的全部改动。<a href="https://github.com/PrincetonUniversity/STELLOPT/tree/780f5db557eacc7ca1160f4ca5a10a80922e4f26/VMEC2000">原版源码</a> · <a href="https://github.com/Yihui-L/VMEC-websites/tree/main/Source-Code/VMEC-lyh">VMEC-lyh 源码</a></p>
+<p>维护此页时，先判断新的代码改动是否属于已有条目。同一功能或影响范围的改动并入对应条目，独立主题另列一项。每个条目随源码更新，说明当前行为、适用范围及相关验证。</p>
+
+<div class="jump"><a href="#input">完整输入参数</a><a href="#cpu-launch">构建与运行</a><a href="../VMEC-lyh-example/">NCSX 算例</a></div>
+</div></header>
+<div class="reading-tools"><h2>当前源码的改动</h2><input type="search" id="topic-search" aria-label="搜索文档章节" placeholder="搜索，如 NESTOR 或 FTOL" hidden><span id="search-status" role="status" hidden></span></div>
+<p id="empty-results" hidden>未找到匹配章节。</p>
+<section class="topic" id="mgrid" aria-labelledby="title-mgrid">
+<h2 class="topic-title" id="title-mgrid"><span class="topic-number">01</span><span>MGRID 缓存与 MPI 读入</span></h2>
+<ul>
+<li><strong>缓存文件身份。</strong> 缓存同时核对 MGRID 实际读取路径、<code>EXTCUR</code>、<code>NFP</code>、环向采样点数 <code>NV</code> 及诊断配置。Linux 构建比较文件的设备、inode、大小及纳秒级修改时间和状态变更时间，识别同路径覆盖或替换。读取前后身份均可确认且一致时才登记缓存。身份无法确认时重新读取。命中时恢复线圈数量、网格模式与诊断计数。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/LIBSTELL/Sources/Modules/mgrid_mod.f">MGRID 读入</a></li>
+<li><strong>MPI 缓存和共享外场。</strong> 求解通信器内所有秩均命中时才复用缓存，MPI 缓存也核对参与组与秩顺序。同组的新通信器可复用缓存。二进制和 NetCDF 读入按阶段同步错误，共享内存区由组内首秩初始化。广播前为线圈元数据分配空间。</li>
+<li><strong>私有数组和共享窗口。</strong> 无通信器的读取使用私有数组，MPI 读取使用共享窗口，两者可以在同一进程切换。共享窗口按其分配组集体释放。如果新 MPI 组未覆盖原窗口的成员，读取返回状态 9，可先由原组集体释放后再切换。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/LIBSTELL/Sources/Modules/mgrid_mod.f">存储管理</a></li>
+<li><strong>输入校验。</strong> 读入时检查网格维度、场周期、环向采样相容性和线圈场数组。NetCDF 数值读入检查非有限值和缺失值标记。只有完整读入并通过检查的数据才能复用。</li>
+<li><strong>输入错误返回。</strong> 缺失、损坏或与输入不相容的 MGRID 会使自由边界求解以状态 9 结束。本次求解不会生成 WOUT。MPI 各秩共同返回错误，连续算例之间也应用同一规则。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/readin.f">输入处理</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/runvmec.f">求解入口</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/vmec.f">命令行入口</a></li>
+<li><strong>运行时网格覆盖。</strong> NESTOR 检查实际插值点的 LCFS 位置。越出 MGRID 的 R/Z 范围时以状态 20 结束，避免用网格边缘场替代越界点的场并输出平衡。NCSX 裁切网格在单秩和双 MPI 秩均复现了该错误返回。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/becoil.f">外场插值</a></li>
+</ul>
+</section>
+<section class="topic" id="vacuum-update" aria-labelledby="title-vacuum-update">
+<h2 class="topic-title" id="title-vacuum-update"><span class="topic-number">02</span><span>自由边界真空场更新间隔</span></h2>
+<ul>
+<li><strong>原版行为。</strong> 自由边界求解中的 <code>NVACSKIP</code> 控制两次完整真空场更新之间的迭代间隔。原版串行和并行 <code>funct3d</code> 各有一个只在首次使用时初始化的 <code>nvskip0</code>。同一进程读入新算例后，自适应更新间隔仍可能被上个算例的下限限制。</li>
+<li><strong>修法。</strong> 串行和并行路径共用同一个 <code>nvskip0</code>，每次读入新算例时根据当前输入重置。<code>NVACSKIP</code> 非正时仍先按原有规则取 <code>NFP</code>，下限至少为 1。同一算例续算或切换径向网格时沿用该下限，自适应更新逻辑继续生效。<a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/readin.f">新输入初始化</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/vmec_main.f">下限状态</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/funct3d.f">并行更新</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/funct3d.f">串行更新</a></li>
+</ul>
+</section>
+<section class="topic" id="convergence" aria-labelledby="title-convergence">
+<h2 class="topic-title" id="title-convergence"><span class="topic-number">03</span><span>FTOL 与平衡输出</span></h2>
+<ul>
+<li><strong>容差优先级。</strong> 全部为零的 <code>FTOL_ARRAY</code> 表示按 <code>FTOL</code> 生成容差。<code>FTOL</code> 须为有限正数，单阶段直接使用它，多阶段从 <code>1e-8</code> 按几何序列过渡到它。显式 <code>FTOL_ARRAY</code> 的每个有效阶段须有有限正容差。<code>NS_ARRAY</code> 的有效阶段须连续、非递减且 <code>NS&gt;=3</code>，允许同一分辨率重复求解。省略 <code>NS_ARRAY</code> 时沿用 <code>NSIN</code> 入口。WOUT 的 <code>ftolv</code> 记录实际采用的阶段容差。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/readin.f">输入检查</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/wrout.f">WOUT 容差</a></li>
+<li><strong>平衡输出资格。</strong> 标准 WOUT 及相应的平衡输出要求原生求解成功，当前阶段的 <code>fsqr</code>、<code>fsqz</code>、<code>fsql</code> 有限、非负且均满足 <code>ftolv</code>。自由边界在当前候选几何上强制刷新完整真空场和力归一化，再按同一原生判据复验。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/evolve.f">停机复验</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/fileout.f">输出检查</a></li>
+<li><strong>原子发布和旧结果归档。</strong> 正式输出先写入同目录临时文件，成功关闭后通过重命名发布。先发布相应诊断，最后发布标准 NetCDF WOUT。发布中途失败时清理本轮已发布文件。开始新求解前将已有同名结果移到 <code>wout_&lt;算例&gt;.previous.&lt;随机串&gt;.nc</code> 等归档路径，避免将旧结果误读为本次结果。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/vmec_io.f">文件发布和归档</a></li>
+<li><strong>常用失败状态。</strong> 命令行返回非零状态。<code>2</code> 表示未达收敛要求，<code>5</code> 表示输入或运行配置不合法，<code>9</code> 表示 MGRID 读入失败，<code>20</code> 表示真空场覆盖或求解失败，<code>21</code> 表示输出归档、写入或发布失败。失败时不签发本轮平衡。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/vmec_params.f">状态定义</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/vmec.f">命令行返回</a></li>
+<li><strong>串行 m=1 力缩放。</strong> 原版 <code>scale_m1</code> 将含额外存储点的 <code>NS+1</code> 长度系数整列赋给长度为 <code>NS</code> 的缩放数组，在开启数组检查时会触发维度错误。现在仅使用有效径向点 <code>1:NS</code>，与 MPI 路径的作用范围及原缩放公式一致。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/residue.f90">力缩放实现</a></li>
+</ul>
+</section>
+<section class="topic" id="flux-endpoints" aria-labelledby="title-flux-endpoints">
+<h2 class="topic-title" id="title-flux-endpoints"><span class="topic-number">04</span><span>磁通和旋转变换的径向端点</span></h2>
+<ul>
+<li><strong>原版行为。</strong> 并行例程先把径向索引裁剪到内部网格 <code>2:ns-1</code>，随后用裁剪后的索引判断是否应更新旋转变换 <code>iotaf</code> 的磁轴和边界值，以及极向磁通径向导数 <code>chipf</code> 的边界值。这些分支无法进入。<code>chipf</code> 的轴值另有分支，但首进程的径向分区过短时会退化为直接使用单个半网格值。</li>
+<li><strong>修法。</strong> 改用 <code>tlglob == 1</code> 与 <code>trglob == ns</code> 判断磁轴和最外闭合磁面（LCFS）的所属进程。各端点按串行定义，以最近和次近两个半网格值分别乘以 <code>3/2</code> 与 <code>-1/2</code> 作线性外推。<code>LRFP</code> 分支对 <code>1/iota</code> 外推后再取倒数。<a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/add_fluxes.f90#L63-L88">并行端点</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/add_fluxes.f90#L151-L169">串行公式</a></li>
+<li><strong>对 <code>wout</code> 的影响。</strong> 原版标准 <code>wout</code> 在写出前已通过串行后处理重建 <code>iotaf</code> 和 <code>chipf</code>，其端点已按串行公式计算。这项修复使并行阶段直接读取全网格端点时也获得同样定义的值。<a href="https://github.com/PrincetonUniversity/STELLOPT/blob/780f5db557eacc7ca1160f4ca5a10a80922e4f26/VMEC2000/Sources/Input_Output/fileout.f">原版输出前重算</a> · <a href="https://github.com/PrincetonUniversity/STELLOPT/blob/780f5db557eacc7ca1160f4ca5a10a80922e4f26/VMEC2000/Sources/Input_Output/wrout.f">数组写出</a></li>
+
+</ul>
+</section>
+<section class="topic" id="current-spectrum" aria-labelledby="title-current-spectrum">
+<h2 class="topic-title" id="title-current-spectrum"><span class="topic-number">05</span><span><code>currvmns</code> 径向差分索引</span></h2>
+<ul>
+<li><strong>触发条件。</strong> <code>LASYM</code> 启用时，后处理为 Nyquist 谱中的奇数极向模 <code>m</code> 计算 <code>currvmns</code>，即雅可比加权环向电流的正弦谱。构造全网格上的径向导数时，左右两个半网格的协变极向磁场系数 <code>B_u</code> 应分别使用本点的径向因子 <code>shalf</code> 归一化。</li>
+<li><strong>修法。</strong> 原版两项都除以右侧的 <code>shalf(js+1)</code>。左侧项 <code>bu0</code> 改为 <code>bsubumns_(:,js)/shalf(js)</code>，右侧项 <code>bu1</code> 仍使用 <code>shalf(js+1)</code>。</li>
+<li><strong>影响范围。</strong> 修正奇数 <code>m</code> 的内部电流谱及由这些值外推的相关端点。该差分在输出电流的后处理中执行。<a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/LIBSTELL/Sources/Modules/read_wout_mod.f90">电流谱计算</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/wrout.f">输出调用</a></li>
+</ul>
+</section>
+<section class="topic" id="input" aria-labelledby="title-input">
+<h2 class="topic-title" id="title-input"><span class="topic-number">06</span><span><code>&amp;ADDITIONAL_LYH</code> 参数参考</span></h2>
+<ul>
+<li><strong>读入与写回。</strong> CPU 资源和新增 GMRES1D 的控制项使用同一个可选输入组。省略该组时使用默认值，每份新输入重新初始化。重复组和非法参数均返回输入错误。MPI 广播和写回包含该组。<a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/LIBSTELL/Sources/Modules/vmec_input.f">输入实现</a></li>
+</ul>
+<h3>完整参数表</h3>
+<p>通常将可选的 <code>&amp;ADDITIONAL_LYH</code> 放在 <code>&amp;INDATA</code> 的结束符 <code>/</code> 之后。每个输入文件可包含一个该组。省略某一项时使用下表的默认值。 新增加速和 GMRES1D 开关均默认关闭。</p>
+<p>Fourier 几何与平衡变量使用 <code>&amp;INDATA</code> 的 <code>MPOL</code> 和 <code>NTOR</code>。谱凝聚、角向网格和 Nyquist 谱沿用 VMEC 的既有规则。</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="ADDITIONAL_LYH 完整参数表"><table id="additional-lyh-parameters">
+<thead><tr><th scope="col">变量</th><th scope="col">类型与默认值</th><th scope="col">取值与实际作用</th></tr></thead>
+<tbody>
+<tr><th scope="row"><code>L_CPU_ACCEL</code></th><td>逻辑 <code>.FALSE.</code></td><td>设为真时启用 Fourier 变换和 NESTOR Green 积分的 OpenMP 路径，并允许启动器自动分配 CPU。关闭时每秩一个线程，显式 MPI 仍可用。</td></tr>
+<tr><th scope="row"><code>CPU_THREADS</code></th><td>整数 <code>0</code></td><td><code>L_CPU_ACCEL=T</code> 时，<code>0</code> 自动选择，正整数请求指定的每秩线程数，实际值受线程上限和 CPU 资源限制。<code>L_CPU_ACCEL=F</code> 时请求超过一个线程会报输入错误。</td></tr>
+<tr><th scope="row"><code>MPI_RANKS</code></th><td>整数 <code>0</code></td><td><code>run_vmec.py</code> 的 MPI 秩数。<code>0</code> 在 CPU 加速关闭时选 1，在启用时自动分配。正整数显式指定秩数。直接运行 <code>xvmec2000</code> 时，由外部启动命令决定秩数。</td></tr>
+<tr><th scope="row"><code>L_GMRES1D</code></th><td>逻辑 <code>.FALSE.</code></td><td>设为真时启用可选的 1D 预条件 GMRES，要求 <code>PRECON_TYPE=NONE</code> 或 <code>DEFAULT</code>，并设置有限正阈值。</td></tr>
+<tr><th scope="row"><code>GMRES1D_THRESHOLD</code></th><td>实数 <code>0</code></td><td>GMRES1D 的残差和切换阈值，仅在 <code>L_GMRES1D=T</code> 时使用。</td></tr>
+</tbody></table></div>
+<h3>完整默认配置</h3>
+<pre><code class="language-fortran">&amp;ADDITIONAL_LYH
+  L_CPU_ACCEL      = .FALSE.
+  CPU_THREADS      = 0
+  MPI_RANKS        = 0
+  L_GMRES1D        = .FALSE.
+  GMRES1D_THRESHOLD = 0
+/
+</code></pre>
+</section>
+<section class="topic" id="fourier-openmp" aria-labelledby="title-fourier-openmp">
+<h2 class="topic-title" id="title-fourier-openmp"><span class="topic-number">07</span><span>Fourier 变换的 OpenMP 并行</span></h2>
+<ul>
+<li><strong>径向面并行。</strong> 四个并行布局的正、逆 Fourier 变换按径向面静态分配线程。各线程处理独立径向切片，并使用私有循环变量和临时标量。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/totzsp_mod.f">逆变换</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/tomnsp_mod.f">正变换</a></li>
+<li><strong>单线程执行。</strong> 每秩只有一个工作线程、局部只有一个径向面或关闭 CPU 加速时，转入同一源码单独编译的单线程内核。该内核使用普通 Fortran 循环，编译时关闭 OpenMP。两条路径沿用相同的变换公式和调用次序，每个径向面上的运算顺序一致。</li>
+</ul>
+</section>
+<section class="topic" id="nestor" aria-labelledby="title-nestor">
+<h2 class="topic-title" id="title-nestor"><span class="topic-number">08</span><span>NESTOR 真空积分与线性求解</span></h2>
+<ul>
+<li><strong>并行积分与工作区复用。</strong> Green 核按最多 64 个源点分块，各线程独立计算输出列。每线程复用临时数组，按原源点顺序累加。单线程使用单列缓冲直接累加。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/scalpot.f">真空势</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/greenf.f">Green 内核</a></li>
+<li><strong>核函数验证。</strong> 合成输入在 1 和 4 线程下与原内核逐项一致。固定合成数据在 <code>-O2</code> 和 4 核亲和性下，3 组交错测量的中位数从 0.534 s 降至 0.167 s，约 3.20 倍。</li>
+<li><strong>OpenBLAS 兼容。</strong> GNU/OpenBLAS 构建识别到 OpenBLAS 0.3.20 的 Cooperlake 内核时，NESTOR 和原生二维预条件的 LU 分解使用 <code>DGETF2</code>，求解按单个右端调用 <code>DGETRS</code>。其他后端沿用常规 LAPACK 调用。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Hessian/hessian_lapack.f90">兼容实现</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/scalpot.f">真空分解</a></li>
+<li><strong>真空线性求解错误。</strong> 检查 LU 分解与回代状态，以及矩阵和求解结果是否有限。分解失败的秩跳过回代，真空参与秩同步状态，再向所有运行秩传播，失败返回 20。双秩作业中向一个秩注入分解错误，两个秩均以状态 20 结束。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/scalpot.f">分解和缓存</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/vacuum.f">回代和错误传播</a></li>
+<li><strong>直接读取 LU 缓存。</strong> 完整真空更新时分配矩阵构造工作区。随后 <code>DGETRS</code> 直接读取已分解的 LU 因子，省去每次求解的整矩阵复制和增量更新时的矩阵分配。Green 积分、Fourier 变换和回代的浮点运算次序保持一致。单核 OpenBLAS 合成测试中，矩阵阶数为 169、338、676 时，每次复制加回代的配对中位时间分别减少约 5.8、32、250 µs。这个测试只衡量局部线性求解。双秩 NCSX 对照中，去除复制前后的 WOUT 和 JXBOUT 逐变量一致，真空压力与边界磁场诊断表相同。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/vacuum.f">真空回代</a></li>
+</ul>
+</section>
+<section class="topic" id="mpi-reduction" aria-labelledby="title-mpi-reduction">
+<h2 class="topic-title" id="title-mpi-reduction"><span class="topic-number">09</span><span>MPI 标量归约</span></h2>
+<ul>
+<li><strong>MPI 通信。</strong> 能量、归一化量和 R/Z/lambda 力残差以局部求和及打包 <code>Allreduce</code> 计算，替代仅用于求和的全径向收集。保留所用径向范围、边界残差及完整 <code>vp</code> 剖面。MPI 求和顺序变化可能产生浮点舍入差异。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/bcovar.f">磁场与能量</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/residue.f90">力残差</a></li>
+<li><strong>回归验证。</strong> 能量、归一化量和力残差通过 1、2、4 秩的合成归约测试。</li>
+<li><strong>MPI 通信器生命周期。</strong> 在重复运行及 VSEQ 中，替换前释放旧的运行和真空通信器。参与秩数变化时调整真空分区和计时数组容量。求解完成或清理时回收本次运行资源。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/parallel_vmec_module.f90">通信器与分区</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/runvmec.f">运行控制</a></li>
+</ul>
+</section>
+<section class="topic" id="cpu-launch" aria-labelledby="title-cpu-launch">
+<h2 class="topic-title" id="title-cpu-launch"><span class="topic-number">10</span><span>CPU 资源分配与启动</span></h2>
+<p>CPU 控制项为 <code>L_CPU_ACCEL</code>、<code>CPU_THREADS</code> 和 <code>MPI_RANKS</code>。三项均放在 <a href="#additional-lyh-parameters"><code>&amp;ADDITIONAL_LYH</code></a>，线程数与秩数都要求为非负整数。</p>
+<h3>两种启动入口的线程设置</h3>
+<ul>
+<li><strong>自动启动器。</strong> <code>run_vmec.py</code> 根据输入参数、可用 CPU 与 <code>OMP_THREAD_LIMIT</code> 分配资源，再设置子进程的 <code>OMP_NUM_THREADS</code>。调用者原先导出的 <code>OMP_NUM_THREADS</code> 由启动器计算值覆盖。 <code>L_CPU_ACCEL=F</code> 且 <code>MPI_RANKS=0</code> 时默认启动一秩一线程。明确设置正整数 <code>MPI_RANKS</code> 或直接使用外部 MPI 启动仍可运行原生 MPI 布局，此时每秩使用一个线程。</li>
+<li><strong>直接 MPI 启动。</strong> 设定正整数 <code>CPU_THREADS</code> 时优先使用该值。取 <code>0</code> 时读取环境变量 <code>OMP_NUM_THREADS</code> 的首个整数。两项均未指定时，Linux 原生入口识别本节点各秩互不重叠的 CPU 亲和掩码，直接使用各秩的可见 CPU 数。亲和掩码重叠或无法可靠识别时，按本节点秩数保守分配。结果受本秩亲和性、可得的节点 CPU 配额、<code>OMP_THREAD_LIMIT</code> 和 MPI 线程级别限制。</li>
+<li><strong>旧输入项。</strong> <code>&amp;INDATA</code> 中的同名 <code>OMP_NUM_THREADS</code> 仍能读入。当前加速路径的线程数由 <code>CPU_THREADS</code>、环境变量及运行资源决定。</li>
+</ul>
+<h3>环境变量与资源限制</h3>
+<div class="table-scroll" tabindex="0" role="region" aria-label="CPU 运行环境变量"><table>
+<thead><tr><th scope="col">变量</th><th scope="col">作用</th></tr></thead>
+<tbody>
+<tr><th scope="row"><code>HWLOC_COMPONENTS</code></th><td>CPU 启动器在未设置时默认 <code>-gl,-opencl</code>，跳过图形/OpenCL 拓扑发现，保留 CPU/PCI 拓扑；用户显式设置原样保留。直接运行原生入口时由外部环境决定。</td></tr>
+<tr><th scope="row"><code>OMP_THREAD_LIMIT</code></th><td>OpenMP 线程硬上限，启动器和原生入口都遵循。</td></tr>
+<tr><th scope="row"><code>OMP_NUM_THREADS</code></th><td>直接启动时为 <code>CPU_THREADS=0</code> 提供线程数。自动启动器为子进程重设此变量。</td></tr>
+<tr><th scope="row"><code>SLURM_CPUS_PER_TASK</code></th><td>自动启动器将其作为可用 CPU 预算上限之一。</td></tr>
+<tr><th scope="row"><code>PARVMEC</code></th><td>默认使用并行布局。取 <code>F</code> 时使用单秩串行布局，启动器拒绝同时请求多个 MPI 秩，尾随空格按原生入口的规则处理。</td></tr>
+<tr><th scope="row"><code>OMP_DYNAMIC</code>、<code>OMP_PLACES</code>、<code>OMP_PROC_BIND</code></th><td>自动启动器分别设为 <code>FALSE</code>、<code>threads</code> 和 <code>spread</code>，配合每秩独立的 CPU 集合。</td></tr>
+<tr><th scope="row"><code>OPENBLAS_NUM_THREADS</code>、<code>MKL_NUM_THREADS</code>、<code>BLIS_NUM_THREADS</code></th><td>自动启动器设为 <code>1</code>，避免线性代数库与 OpenMP 嵌套占用线程。直接启动时由外部环境配置。</td></tr>
+<tr><th scope="row"><code>OMP_STACKSIZE</code></th><td>线程栈大小。自动启动器在用户未设置时取 <code>64M</code>。</td></tr>
+<tr><th scope="row"><code>VMEC_CPU_BUDGET</code>、<code>VMEC_CPUSET</code></th><td>启动器在进程间传递预算与 CPU 集合的内部变量。</td></tr>
+</tbody></table></div>
+<h3>两秩四线程示例</h3>
+<p>以下配置在可用 CPU 预算至少为 8、且线程上限至少为 4 时分配两秩、每秩四线程。使用 <code>run_vmec.py --dry-run</code> 检查实际秩数和每秩线程数。</p>
+<pre><code class="language-fortran">&amp;ADDITIONAL_LYH
+  L_CPU_ACCEL = .TRUE.
+  CPU_THREADS = 4
+  MPI_RANKS   = 2
+/
+</code></pre>
+<ul>
+<li><strong>自动分配策略。</strong> <code>run_vmec.py</code> 通过编译后的原生输入模块读取参数，结合 CPU 亲和性、可见的 cgroup v1/v2 配额及 Slurm 每任务 CPU 限额计算可用预算。线程数与秩数都自动选择时优先分配 MPI 秩。秩数由可用预算及求解器首级径向网格的 <code>max(1, floor(NS/2))</code> 上限约束，剩余预算按每秩等量分配给 OpenMP。显式设置线程数时，自动选择的秩数还受每秩线程请求约束。超出预算的显式组合会报错。</li>
+<li><strong>单节点自动启动。</strong> 启动器为各 MPI 进程分配互不重叠的 CPU 集合，并将 OpenBLAS、MKL 和 BLIS 内部线程设为 1。程序以 <code>MPI_THREAD_FUNNELED</code> 初始化，MPI 通信与计时由主线程执行。外部库调用只提供 <code>MPI_THREAD_SINGLE</code> 时，OpenMP 内核使用单线程。</li>
+<li><strong>直接 MPI 调用。</strong> 多节点作业由调度器或 <code>mpirun</code> 配置进程。原生入口结合本秩的亲和掩码与共享节点配额裁剪线程数。<code>PARVMEC=F</code> 仅允许单秩，原生入口在创建输出前拒绝多 MPI 秩。VSEQ 日志与正式平衡文件由全局秩 0 写入。自动启动器面向单节点，调用应在 MPI 作业外进行。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/vmec.f">原生启动与输出</a></li>
+<li><p><strong>构建和启动。</strong> 提供 GNU Fortran、Open MPI、OpenBLAS、ScaLAPACK、NetCDF Fortran 的构建配置。构建前解析真实路径，拒绝通过符号链接把生成文件写回源码目录。<code>build_cpu.sh</code> 在指定的外部目录构建，并生成 <code>xvmec2000</code>、原生参数解析辅助程序和 <code>run_vmec.py</code>。Release 使用 <code>-O3 -fopenmp</code>，Debug 加入运行时检查。原生内核使用双精度。</p>
+</li>
+</ul>
+<pre><code class="language-bash">./Source-Code/VMEC-lyh/build_cpu.sh /path/to/vmec-build release
+/path/to/vmec-build/bin/run_vmec.py --dry-run \
+  VMEC-lyh-example/NCSX/input.ncsx_c09r00_free_additional_lyh
+/path/to/vmec-build/bin/run_vmec.py \
+  VMEC-lyh-example/NCSX/input.ncsx_c09r00_free_additional_lyh
+</code></pre>
+<ul>
+<li><p><strong>运行目录。</strong> 启动器在输入文件所在目录运行，<code>MGRID_FILE</code> 的相对路径按该目录解释。NCSX 的 <code>mgrid_c09r00.nc</code> 需要由同目录的 MAKEGRID 输入提前生成。<code>--dry-run</code> 仅解析输入和输出资源计划。<a href="https://github.com/Yihui-L/VMEC-websites/blob/main/VMEC-lyh-example/NCSX/input.ncsx_c09r00_free_additional_lyh">NCSX 示例</a></p>
+</li>
+<li><strong>构建与验证范围。</strong> GNU Fortran、Open MPI、OpenMP 的 Debug 与 Release 构建通过。NCSX 自由边界的端到端结果见下表。</li>
+</ul>
+<h3>NCSX 自由边界回归</h3>
+<p>使用同一 NCSX 自由边界输入和 MGRID，最终径向网格为 99 个磁面，最终 FTOL 为 1e-12。原版与对照版在同一核心集合上交错重复测试，当前版本用相同布局复跑。混合布局明确启用 ADDITIONAL_LYH 的 CPU 加速。各组固定 CPU 亲和性并使用单线程 OpenBLAS Haswell。共享节点的计时以中位数和范围报告。</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="NCSX 自由边界回归"><table>
+<thead><tr><th scope="col">版本</th><th scope="col">CPU 配置</th><th scope="col">次数</th><th scope="col">端到端中位数（s）</th><th scope="col">端到端范围（s）</th><th scope="col">求解中位数（s）</th></tr></thead>
+<tbody>
+<tr><th scope="row">原版 VMEC</th><td>串行，1 核</td><td>3</td><td>58.87</td><td>55.88–66.59</td><td>57.26</td></tr>
+<tr><th scope="row">对照版 VMEC-lyh（133d504）</th><td>串行，1 核</td><td>3</td><td>56.33</td><td>55.22–57.32</td><td>54.70</td></tr>
+<tr><th scope="row">当前 VMEC-lyh</th><td>串行，1 核</td><td>2</td><td>62.13</td><td>59.07–65.19</td><td>59.83</td></tr>
+<tr><th scope="row">原版 VMEC</th><td>4 秩 × 1 线程</td><td>3</td><td>18.20</td><td>17.41–19.16</td><td>15.83</td></tr>
+<tr><th scope="row">对照版 VMEC-lyh（133d504）</th><td>4 秩 × 1 线程</td><td>3</td><td>20.06</td><td>18.76–20.91</td><td>18.19</td></tr>
+<tr><th scope="row">当前 VMEC-lyh</th><td>4 秩 × 1 线程</td><td>3</td><td>19.81</td><td>18.75–21.76</td><td>17.12</td></tr>
+<tr><th scope="row">当前 VMEC-lyh</th><td>2 秩 × 2 线程，显式启用加速</td><td>2</td><td>26.84</td><td>25.81–27.87</td><td>24.77</td></tr>
+</tbody></table></div>
+<p>当前版本的三种 CPU 布局均达到原 FTOL。相对同工况原版，LCFS 和磁轴最大位置差为 1.05e-07 m 和 2.37e-09 m，iotaf 最大差 3.68e-08，b0 最大差 2.12e-09 T，环向电流剖面最大差 2.97e-09 A，equif 最大差 2.65e-06。全网格压强剖面逐点相同。</p>
+<p>在保持候选谱系数固定的独立真空复算中，默认、二维 GMRES 和 GMRES1D 三种路径的原生三项残差均达到原 FTOL。验收使用原收敛容差和相同的离散平衡方程。</p>
+</section>
+<section class="topic" id="timing" aria-labelledby="title-timing">
+<h2 class="topic-title" id="title-timing"><span class="topic-number">11</span><span>运行计时</span></h2>
+<ul>
+<li><strong>MPI 计时文件。</strong> 命令行运行由 MPI 全局秩 0 写入 <code>timings.txt</code>，记录该秩的阶段用时及通信等待。<code>PARVMEC=F</code> 时也记录实际力评估和正、逆 Fourier 变换的用时，正向对应 <code>tomnsp</code>，逆向对应 <code>totzsp</code>。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/timer_sub.f">计时输出</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/funct3d.f">力评估与 Fourier 计时</a></li>
+<li><strong>真空场积分。</strong> 按结束时间减去起始时间累计 <code>scalpot</code> 用时。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/NESTOR_vacuum/scalpot.f">真空积分计时</a></li>
+<li><strong>串行二维预条件器。</strong> 修正计时日志的输出单元与实数格式。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Hessian/precon2d.f">二维预条件计时</a></li>
+</ul>
+</section>
+<section class="topic" id="solver-options" aria-labelledby="title-solver-options">
+<h2 class="topic-title" id="title-solver-options"><span class="topic-number">12</span><span>可选 GMRES 求解路径</span></h2>
+<ul>
+<li><strong>输入参数。</strong> <code>&amp;INDATA</code> 的原有 <code>PRECON_TYPE</code> 默认为 <code>NONE</code>，使用原一维预条件松弛。原有 <code>GMRES</code> 使用二维块预条件，沿用 <code>PREC2D_THRESHOLD</code>。新增 <code>GMRES1D</code> 由 <code>&amp;ADDITIONAL_LYH</code> 的 <code>L_GMRES1D</code> 和 <code>GMRES1D_THRESHOLD</code> 独立启用，与原有二维预条件互斥。两种路径均在最终径向网格且三项原生残差之和小于对应阈值时尝试切换。自由边界还要求真空已启用。<code>GMRESR</code> 和 <code>TFQMR</code> 仅支持 <code>PARVMEC=F</code> 的单秩真串行布局。旧的 <code>PRECON_TYPE=GMRES1D</code> 会提示迁移并报输入错误。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Input_Output/readin.f">输入分派</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/evolve.f">算法切换</a></li>
+<li><strong>独立试步评价。</strong> GMRES 用独立的试步评价量判断残差下降，自由边界的评价量包含 LCFS 的 R/Z 力贡献一次。自由边界重新计算基点力，基点与试探点采用相同的力评价规则。拒绝试步时恢复基点状态并转回原预条件松弛，收敛仍按原三项残差和 <code>FTOL</code> 判定。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/TimeStep/gmres_mod.f">试步接受与恢复</a> · <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/General/residue.f90">试步残差</a></li>
+</ul>
+</section>
+<section class="topic" id="wout-restart" aria-labelledby="title-wout-restart">
+<h2 class="topic-title" id="title-wout-restart"><span class="topic-number">13</span><span>WOUT 种子重启</span></h2>
+<ul>
+<li><strong>几何初值与新输入。</strong> 使用 <code>reset=</code> 读取已有 WOUT 的 R/Z/λ 作为初值。NetCDF 只读取种子几何、λ 和相容性校验所需字段。旧文本由独立种子读取路径兼容。自由边界开关、MGRID、线圈和剖面来自新输入。种子须与目标的 <code>NS</code>、<code>MPOL</code>、<code>NTOR</code>、<code>NFP</code> 相符，并包含完整、无重复的有限谱系数。由 MPI 秩 0 读取和重构，再向各秩分发。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Initialization_Cleanup/load_xc_from_wout.f">种子校验和读取</a></li>
+<li><strong>λ 的径向重构。</strong> 从磁轴向外按原网格顺序反解 WOUT 的半网格 λ 插值。偶极向模使用普通径向递推，奇极向模带上近轴径向权重。先恢复全网格 λ，再按 <code>phipf/lamscale</code> 转回内部变量，使重构独立于 MPI 径向分区。 <a href="https://github.com/Yihui-L/VMEC-websites/blob/main/Source-Code/VMEC-lyh/VMEC2000/Sources/Initialization_Cleanup/load_xc_from_wout.f">径向递推与内部尺度</a></li>
+</ul>
+</section>
+<footer><a href="#top">返回页首 ↑</a></footer>
+</main>
+</div>
+<script>
+const search = document.querySelector('#topic-search');
+const status = document.querySelector('#search-status');
+const empty = document.querySelector('#empty-results');
+const topics = Array.from(document.querySelectorAll('.topic'));
+const navLinks = Array.from(document.querySelectorAll('.toc a'));
+search.hidden = false;
+status.hidden = false;
+function filterTopics() {
+  const words = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let count = 0;
+  topics.forEach((topic, index) => {
+    const matches = words.every(word => topic.textContent.toLowerCase().includes(word));
+    topic.hidden = !matches;
+    navLinks[index].parentElement.hidden = !matches;
+    if (matches) count++;
+  });
+  status.textContent = count + ' / ' + topics.length + ' 节';
+  empty.hidden = count !== 0;
+}
+search.addEventListener('input', filterTopics);
+document.querySelectorAll('.jump a').forEach(link => link.addEventListener('click', () => {
+  search.value = '';
+  filterTopics();
+}));
+filterTopics();
+</script>
+</body>
+</html>
