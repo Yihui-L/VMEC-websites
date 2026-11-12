@@ -20,4 +20,4 @@ VMEC-websites/
 
 程序手册迁自原 `Documents/`。源码快照的版本及许可见 [源码版本说明](Source-Code/SOURCE_VERSION.md)。NCSX 资料保留原始输入和 WOUT，计算条件、诊断定义和文件校验和见 [数据对比记录](VMEC-lyh-example/NCSX/wout_comparison.md)。
 
-推送到 `main` 后，GitHub Actions 将程序手册和算例文件发布到 GitHub Pages。两个站点入口分别位于 `Source-Code/` 和 `VMEC-lyh-example/`。手册中的源码链接指向本仓库的完整源码快照。
+GitHub Pages 从 `gh-pages` 分支的根目录发布。更新网站时，将手册和算例的改动同步到该分支。两个站点入口分别位于 `Source-Code/` 和 `VMEC-lyh-example/`。手册中的源码链接指向本仓库的完整源码快照。
